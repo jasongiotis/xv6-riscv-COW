@@ -10,8 +10,8 @@ COW fork() creates just a pagetable for the child, with PTEs for user memory poi
 COW fork() makes freeing of the physical pages that implement user memory a little trickier. A given physical page may be referred to by multiple processes' page tables, and should be freed only when the last reference disappears.
 
 <h3> How to test  the project </h3>
-1) make qemu ( wait for the xv6 kernel to boot)
-2) cowtest  
-3) usertests
+1) make qemu ( wait for the xv6 kernel to boot) <br>
+2) cowtest  <br>
+3) usertests <br>
 
 Implemented on Ubuntu 20.4
