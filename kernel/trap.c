@@ -29,6 +29,31 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+int cowfault(pagetable_t pagetable, uint64 va) 
+{
+  if (va >= MAXVA){ //va dress has excedeed the physical memmory
+    return -1;
+  }
+  pte_t *pte = walk(pagetable, va, 0); //Getting the pte from the va using the walk function
+  if (pte == 0) // walk error
+    return -1;
+  uint64 condition=(*pte & PTE_U) == 0 || (*pte & PTE_V) == 0;
+  //no supervised mode and pte must be valid
+  if (condition) 
+    return -1;
+  uint64 current_page = PTE2PA(*pte);
+  uint64 new_page = (uint64)kalloc(); //alocating new page
+  if (new_page == 0){
+    return -1;
+  }
+  memmove((void *)new_page, (void *)current_page, PGSIZE);
+  *pte = PA2PTE(new_page) | PTE_U | PTE_V | PTE_W | PTE_X|PTE_R; //passing all the essential flagsS 
+  kfree((void *)current_page);  //old page has now one less process so we kalloc to reduce refcnt
+  return 0;
+}
+
+
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -49,31 +74,40 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
+ 
   
   if(r_scause() == 8){
     // system call
 
-    if(killed(p))
+    if(p->killed)
       exit(-1);
 
     // sepc points to the ecall instruction,
     // but we want to return to the next instruction.
     p->trapframe->epc += 4;
 
-    // an interrupt will change sepc, scause, and sstatus,
-    // so enable only now that we're done with those registers.
+    // an interrupt will change sstatus &c registers,
+    // so don't enable until done with those registers.
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  }
+  else if (r_scause()==15 ){  //process tried to write on read only so its cowfault time
+     int result=cowfault(p->pagetable, r_stval());
+     if (result ==-1)
+     p->killed = 1;
+   
+  } 
+  else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    setkilled(p);
+    p->killed = 1;
   }
 
-  if(killed(p))
+  if(p->killed)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
@@ -96,12 +130,11 @@ usertrapret(void)
   // we're back in user space, where usertrap() is correct.
   intr_off();
 
-  // send syscalls, interrupts, and exceptions to uservec in trampoline.S
-  uint64 trampoline_uservec = TRAMPOLINE + (uservec - trampoline);
-  w_stvec(trampoline_uservec);
+  // send syscalls, interrupts, and exceptions to trampoline.S
+  w_stvec(TRAMPOLINE + (uservec - trampoline));
 
   // set up trapframe values that uservec will need when
-  // the process next traps into the kernel.
+  // the process next re-enters the kernel.
   p->trapframe->kernel_satp = r_satp();         // kernel page table
   p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's kernel stack
   p->trapframe->kernel_trap = (uint64)usertrap;
@@ -122,11 +155,11 @@ usertrapret(void)
   // tell trampoline.S the user page table to switch to.
   uint64 satp = MAKE_SATP(p->pagetable);
 
-  // jump to userret in trampoline.S at the top of memory, which 
+  // jump to trampoline.S at the top of memory, which 
   // switches to the user page table, restores user registers,
   // and switches to user mode with sret.
-  uint64 trampoline_userret = TRAMPOLINE + (userret - trampoline);
-  ((void (*)(uint64))trampoline_userret)(satp);
+  uint64 fn = TRAMPOLINE + (userret - trampoline);
+  ((void (*)(uint64,uint64))fn)(TRAPFRAME, satp);
 }
 
 // interrupts and exceptions from kernel code go here via kernelvec,
